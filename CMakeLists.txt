@@ -1,0 +1,7 @@
+cmake_minimum_required(VERSION 3.10)
+project(v4l2-capture-analysis)
+include_directories(.)
+add_executable(cap cap.cpp) 
+target_link_libraries(cap opencv_core)
+target_link_libraries(cap opencv_imgcodecs)
+target_link_libraries(cap opencv_highgui)
