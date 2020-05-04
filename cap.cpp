@@ -15,9 +15,21 @@
 
 #define DEV_STR "/dev/video0"
 #define QLEN    1
-#define LOOP_CNT 10
-//#define INTERACTIVE
+#define LOOP_CNT 100
+#define INTERACTIVE
 #define ON_DEMAND
+
+//#define MJPEG  
+
+using namespace cv;
+
+/* timestamp in ms */
+double gettimeafterboot()
+{
+	struct timespec time_after_boot;
+	clock_gettime(CLOCK_MONOTONIC,&time_after_boot);
+	return (time_after_boot.tv_sec*1000+time_after_boot.tv_nsec*0.000001);
+}
 
 struct buffer {
     void *ptr;
@@ -78,6 +90,42 @@ int main(int argc, char *argv[])
         return EXIT_FAILURE;
     }
 
+	/* Add for setting video capture format */ 
+
+	//struct v4l2_format fmt;
+	char fourcc[5] = {0};
+	format.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+	format.fmt.pix.width = 640;
+	format.fmt.pix.height = 480;
+	//format.fmt.pix.pixelformat = V4L2_PIX_FMT_BGR24;
+	//format.fmt.pix.pixelformat = V4L2_PIX_FMT_GREY;
+	//format.fmt.pix.pixelformat = V4L2_PIX_FMT_BGR24;
+#ifdef MJPEG
+	format.fmt.pix.pixelformat = V4L2_PIX_FMT_MJPEG;
+#endif
+
+#ifndef MJPEG
+	format.fmt.pix.pixelformat = V4L2_PIX_FMT_YUYV;
+#endif
+	format.fmt.pix.field = V4L2_FIELD_NONE;
+
+	if (-1 == ioctl(fd, VIDIOC_S_FMT, &format))
+	{
+		perror("Setting Pixel Format");
+		return 1;
+	}
+
+	strncpy(fourcc, (char *)&format.fmt.pix.pixelformat, 4);
+	printf( "Selected Camera Mode:\n"
+			"  Width: %d\n"
+			"  Height: %d\n"
+			"  PixFmt: %s\n"
+			"  Field: %d\n",
+			format.fmt.pix.width,
+			format.fmt.pix.height,
+			fourcc,
+			format.fmt.pix.field);
+
     /* initialize v4l2 buffers */
     req.count = 4;
     req.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
@@ -135,24 +183,31 @@ int main(int argc, char *argv[])
 
     /* turn on stream */
     type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    ret = ioctl(fd, VIDIOC_STREAMON, &type);
-    if (ret < 0) {
-        perror(cmd);
-        return EXIT_FAILURE;
-    }
 
 	long timelog[LOOP_CNT];
     /* main loop */
-    for (i = 0; i < LOOP_CNT; i++) {
+    //for (i = 0; i < LOOP_CNT; i++) {
+    for (;;) {
+		printf("========================start========================\n");
     	struct timeval start, end;
     	long secs, usecs;
     	fd_set fds;
     	struct timeval tv;
 
+		double loop_start = gettimeafterboot();
+		double select_start, select_time, img_cap_time, busy_wait_time, img_wait_time;
+		
         /* prepare for v4l2 buffer */
         memset(&buf, 0x00, sizeof(struct v4l2_buffer));
         buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-        buf.memory = V4L2_MEMORY_MMAP;
+		buf.memory = V4L2_MEMORY_MMAP;
+
+		ret = ioctl(fd, VIDIOC_STREAMON, &type);
+		if (ret < 0) {
+        perror(cmd);
+        return EXIT_FAILURE;
+    }
+
 #ifdef ON_DEMAND
         ret = ioctl(fd, VIDIOC_QBUF, &buf);
         if (ret < 0) {
@@ -166,7 +221,15 @@ int main(int argc, char *argv[])
         tv.tv_sec = 2;
         tv.tv_usec = 0;
         gettimeofday(&start, NULL);
+
+		select_start = gettimeafterboot();
+
         ret = select(fd + 1, &fds, NULL, NULL, &tv);
+
+		select_time = gettimeafterboot() - select_start;
+
+		printf("Select time (ms): %f\n", select_time);
+
         if (ret < 0) {
             perror(cmd);
             return EXIT_FAILURE;
@@ -184,6 +247,15 @@ int main(int argc, char *argv[])
             perror(cmd);
             return EXIT_FAILURE;
         }
+
+		img_cap_time = (double)buf.timestamp.tv_sec*1000 + (double)buf.timestamp.tv_usec*0.001;
+		img_wait_time = img_cap_time - loop_start;
+
+		printf("Image waiting time (ms) : %f\n", img_wait_time);
+		printf("Busy waiting time (ms): %f\n", select_time - img_wait_time);
+		printf("got data in buff %d, len=%d, flags=0x%X, seq=%d, used=%d)\n",
+			buf.index, buf.length, buf.flags, buf.sequence, buf.bytesused);
+
 #ifndef ON_DEMAND
         ret = ioctl(fd, VIDIOC_QBUF, &buf);
         if (ret < 0) {
@@ -205,9 +277,20 @@ int main(int argc, char *argv[])
     	frame = cvDecodeImage(&cvmat, 1);
     	cvNamedWindow("window",CV_WINDOW_AUTOSIZE);
     	cvShowImage("window", frame);
-    	cvWaitKey(0);
+    	cvWaitKey(1);
     	cvSaveImage("image.jpg", frame, 0);
+
+//		Mat yuyv_frame, preview;
+//
+//		yuyv_frame = Mat(480, 640, CV_8UC2, buffers[buf.index].ptr);
+//
+//		cvtColor(yuyv_frame, preview, COLOR_YUV2BGRA_UYVY);
+//
+//		imshow("1", preview);
+//		waitKey(1);
+
 #endif
+		printf("========================end========================\n");
     }
     /* print each blocking time and average for select*/
     sum = 0;
